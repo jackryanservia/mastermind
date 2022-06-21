@@ -9,11 +9,13 @@ import {
   Poseidon,
   Circuit,
   PrivateKey,
-  PublicKey,
   Mina,
   Party,
   isReady,
+  shutdown,
 } from 'snarkyjs';
+
+export { Mastermind, Pegs };
 
 await isReady;
 
@@ -30,7 +32,7 @@ class Pegs extends CircuitValue {
   }
 }
 
-export class Mastermind extends SmartContract {
+class Mastermind extends SmartContract {
   deploy(args: DeployArgs) {
     super.deploy(args);
     this.setPermissions({
@@ -93,73 +95,37 @@ export class Mastermind extends SmartContract {
 
 // Run
 
-function createLocalBlockchain(): PrivateKey {
-  let Local = Mina.LocalBlockchain();
-  Mina.setActiveInstance(Local);
-
-  const account = Local.testAccounts[0].privateKey;
-  return account;
-}
-
-async function deploy(
-  zkAppInstance: Mastermind,
-  zkAppPrivateKey: PrivateKey,
-  account: PrivateKey
-) {
-  let tx = await Mina.transaction(account, () => {
-    Party.fundNewAccount(account);
-    zkAppInstance.deploy({ zkappKey: zkAppPrivateKey });
-    zkAppInstance.setPermissions({
-      ...Permissions.default(),
-      editState: Permissions.proofOrSignature(),
-    });
-
-    zkAppInstance.init();
-  });
-  await tx.send().wait();
-}
-
-async function validateHint(
-  guessInstance: Pegs,
-  solutionInstance: Pegs,
-  blackPegs: Field,
-  whitePegs: Field,
-  account: PrivateKey,
-  zkAppAddress: PublicKey,
-  zkAppPrivateKey: PrivateKey
-) {
-  let tx = await Mina.transaction(account, () => {
-    let zkApp = new Mastermind(zkAppAddress);
-    zkApp.validateHint(guessInstance, solutionInstance, blackPegs, whitePegs);
-    zkApp.sign(zkAppPrivateKey);
-  });
-  try {
-    await tx.send().wait();
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
 let zkAppPrivateKey = PrivateKey.random();
 let zkAppAddress = zkAppPrivateKey.toPublicKey();
 let zkAppInstance = new Mastermind(zkAppAddress);
 
-let publisherAccount = createLocalBlockchain();
+let Local = Mina.LocalBlockchain();
+Mina.setActiveInstance(Local);
+const publisherAccount = Local.testAccounts[0].privateKey;
+
 console.log('Local Blockchain Online!');
-await deploy(zkAppInstance, zkAppPrivateKey, publisherAccount);
+let tx = await Mina.transaction(publisherAccount, () => {
+  Party.fundNewAccount(publisherAccount);
+  zkAppInstance.deploy({ zkappKey: zkAppPrivateKey });
+  zkAppInstance.setPermissions({
+    ...Permissions.default(),
+    editState: Permissions.proofOrSignature(),
+  });
+});
+tx.send().wait();
+
 console.log('Contract Deployed!');
 let guess = new Pegs([6, 3, 2, 1]);
 let solution = new Pegs([1, 2, 3, 6]);
 let blackPegs = Field.zero;
 let whitePegs = new Field(4);
-await validateHint(
-  guess,
-  solution,
-  blackPegs,
-  whitePegs,
-  publisherAccount,
-  zkAppAddress,
-  zkAppPrivateKey // I'm pretty sure this should be publisherAccount (thus this function should be redefined)
-);
+tx = await Mina.transaction(publisherAccount, () => {
+  let zkApp = new Mastermind(zkAppAddress);
+  zkApp.validateHint(guess, solution, blackPegs, whitePegs);
+  zkApp.sign(zkAppPrivateKey);
+});
+tx.send().wait();
+
 console.log('Guess Valid!');
+
+shutdown();
