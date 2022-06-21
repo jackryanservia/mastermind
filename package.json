@@ -29,7 +29,7 @@
     ]
   },
   "dependencies": {
-    "snarkyjs": "file:../snarkyjs"
+    "snarkyjs": "file:../mina-branch/mina/src/lib/snarky_js_bindings/snarkyjs"
   },
   "devDependencies": {
     "@babel/preset-env": "^7.16.4",
