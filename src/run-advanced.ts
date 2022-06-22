@@ -40,7 +40,6 @@ let tx = await Mina.transaction(publisherAccount, () => {
   }
 });
 tx.send().wait();
-console.log('Contract Deployed!');
 
 // trick: convert zkapp PrivateKey to a Field, to get a secret that can be hashed without adding O(255) constraints
 let scalarBits = zkAppPrivateKey.s.toFields();
@@ -56,6 +55,8 @@ if (withProofs) {
   await tx.prove();
 }
 tx.send().wait();
+
+console.log('Contract deployed and initialized!');
 
 let guess = Pegs.from([6, 2, 1, 3]);
 tx = await Mina.transaction(publisherAccount, () => {

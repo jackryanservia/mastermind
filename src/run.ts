@@ -38,7 +38,6 @@ let tx = await Mina.transaction(publisherAccount, () => {
   }
 });
 tx.send().wait();
-console.log('Contract Deployed!');
 
 tx = await Mina.transaction(publisherAccount, () => {
   zkapp.init(solution);
@@ -49,6 +48,8 @@ if (withProofs) {
   await tx.prove();
 }
 tx.send().wait();
+
+console.log('Contract deployed and initialized!');
 
 let guess = new Pegs([6, 2, 1, 3]);
 tx = await Mina.transaction(publisherAccount, () => {
