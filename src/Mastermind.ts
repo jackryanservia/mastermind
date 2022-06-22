@@ -108,13 +108,20 @@ class Mastermind extends SmartContract {
     this.turnNumber.set(UInt32.zero);
   }
 
-  @method makeGuess() {
-    // TODO subset of validateHint
-    /**
-     * check that numberOfMoves % 2 === 0
-     * numberOfMoves++
-     * set last guess, TBD: encode in circuit? check that each peg is in 1,...,6? add .check() to Peg?
-     */
+  /**
+   * check that numberOfMoves % 2 === 0
+   * numberOfMoves++
+   * set last guess
+   * TBD: need to check that each peg is in 1,..,6?
+   */
+  @method publishGuess(guess: Pegs) {
+    let turnNumber = this.turnNumber.get(); // Grab turnNumber from Mina network
+    this.turnNumber.assertEquals(turnNumber); // add "precondition", so that turnNumber can't be set to anything else than what's currently on the ledger
+    turnNumber.mod(2).assertEquals(UInt32.zero); // Check that it is the guesser's turn
+    // remark: UInt32 is not very efficient, does range check on every operation
+    // but will be just ~1 constraint soon with plookup range check
+    this.turnNumber.set(turnNumber.add(UInt32.one)); // Increment turn number
+    this.lastGuess.set(guess); // Set lastGuess to new guess
   }
 
   @method giveHint() {
