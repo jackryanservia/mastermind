@@ -4,6 +4,8 @@ import {
   method,
   DeployArgs,
   Permissions,
+  state,
+  State,
   CircuitValue,
   arrayProp,
   Poseidon,
@@ -13,7 +15,10 @@ import {
   Mina,
   Party,
   isReady,
+  UInt32,
 } from 'snarkyjs';
+
+// Zoom to 54-33 lines
 
 await isReady;
 
@@ -31,6 +36,12 @@ class Pegs extends CircuitValue {
 }
 
 export class Mastermind extends SmartContract {
+  @state(Pegs) lastGuess = State<Pegs>();
+  @state(Field) solutionHash = State<Field>();
+  @state(UInt32) redPegs = State<UInt32>();
+  @state(UInt32) whitePegs = State<UInt32>();
+  @state(UInt32) turnNumber = State<UInt32>();
+
   deploy(args: DeployArgs) {
     super.deploy(args);
     this.setPermissions({
@@ -39,20 +50,35 @@ export class Mastermind extends SmartContract {
     });
   }
 
-  @method init() {}
+  @method init(solution: Pegs) {
+    this.solutionHash.set(solution.hash());
+    this.lastGuess.set(new Pegs([0, 0, 0, 0]));
+    this.redPegs.set(UInt32.zero);
+    this.whitePegs.set(UInt32.zero);
+    this.turnNumber.set(UInt32.zero);
+  }
 
-  @method validateHint(
-    guessInstance: Pegs,
-    solutionInstance: Pegs,
-    claimedBlackPegs: Field,
-    claimedWhitePegs: Field
-    // solutionHash: Field  Return hash of solution
-  ) {
-    let guess = guessInstance.value;
+  @method publishGuess(guess: Pegs) {
+    let turnNumber = this.turnNumber.get(); // Grab turnNumber from Mina network
+    turnNumber.mod(2).assertEquals(UInt32.zero); // Check that it is the guesser's turn
+    this.turnNumber.set(turnNumber.add(UInt32.one)); // Increment turn number
+
+    // Check that all values are between 1 and 6
+    for (let i = 0; i < 4; i++) {
+      guess.value[i].assertGte(Field.one);
+      guess.value[i].assertLte(new Field(6));
+    }
+
+    this.lastGuess.set(guess); // Set lastGuess to new guess
+  }
+
+  @method publishHint(solutionInstance: Pegs) {
+    // There is no need to check that it is the code generators turn because their behavior is deterministic
+    let guess = this.lastGuess.get().value;
     let solution = solutionInstance.value;
 
-    let blackPegs = Field.zero;
-    let whitePegs = Field.zero;
+    let redPegs = UInt32.zero;
+    let whitePegs = UInt32.zero;
 
     // Assert that all values are between 1 and 6 (for the 6 different colored pegs)
     for (let i = 0; i < 4; i++) {
@@ -62,12 +88,11 @@ export class Mastermind extends SmartContract {
       solution[i].assertLte(new Field(6));
     }
 
-    // Count black pegs
+    // Count red pegs
     for (let i = 0; i < 4; i++) {
       let isCorrectPeg = guess[i].equals(solution[i]);
-      // Increment blackPegs if player guessed the correct peg in the i place
-      blackPegs = Circuit.if(isCorrectPeg, blackPegs.add(Field.one), blackPegs);
-
+      // Increment redPegs if player guessed the correct peg in the i place
+      redPegs = Circuit.if(isCorrectPeg, redPegs.add(UInt32.one), redPegs);
       // Set values in guess[i] and solution[i] to zero if they match so that we can ignore them when calculating white pegs.
       guess[i] = Circuit.if(isCorrectPeg, Field.zero, guess[i]);
       solution[i] = Circuit.if(isCorrectPeg, Field.zero, solution[i]);
@@ -77,17 +102,25 @@ export class Mastermind extends SmartContract {
     for (let i = 0; i < 4; i++) {
       for (let j = 0; j < 4; j++) {
         let isCorrectColor = guess[i].equals(solution[j]);
-        let isNotBlackPeg = guess[i].gt(Field.zero); // This works, right? Any value is greater than zero? It's impossible to overflow?
-        let isWhitePeg = isCorrectColor.and(isNotBlackPeg);
-        whitePegs = Circuit.if(isWhitePeg, whitePegs.add(Field.one), whitePegs);
+        let isNotRedPeg = guess[i].gt(Field.zero); // This works, right? Any value is greater than zero? It's impossible to overflow?
+        let isWhitePeg = isCorrectColor.and(isNotRedPeg);
+        whitePegs = Circuit.if(
+          isWhitePeg,
+          whitePegs.add(UInt32.one),
+          whitePegs
+        );
         guess[i] = Circuit.if(isWhitePeg, Field.zero, guess[i]);
         solution[j] = Circuit.if(isWhitePeg, Field.zero, solution[j]);
       }
     }
 
-    // Check peg numbers
-    blackPegs.assertEquals(claimedBlackPegs);
-    whitePegs.assertEquals(claimedWhitePegs);
+    // Check that solution instance is the one that code generator committed to when they deployed the contract
+    let solutionHash = this.solutionHash.get();
+    solutionInstance.hash().assertEquals(solutionHash); // Is this constrained
+
+    // Set red and white pegs
+    this.redPegs.set(redPegs);
+    this.whitePegs.set(whitePegs);
   }
 }
 
@@ -104,7 +137,8 @@ function createLocalBlockchain(): PrivateKey {
 async function deploy(
   zkAppInstance: Mastermind,
   zkAppPrivateKey: PrivateKey,
-  account: PrivateKey
+  account: PrivateKey,
+  code: Pegs
 ) {
   let tx = await Mina.transaction(account, () => {
     Party.fundNewAccount(account);
@@ -114,23 +148,39 @@ async function deploy(
       editState: Permissions.proofOrSignature(),
     });
 
-    zkAppInstance.init();
+    zkAppInstance.init(code);
   });
   await tx.send().wait();
 }
 
-async function validateHint(
-  guessInstance: Pegs,
-  solutionInstance: Pegs,
-  blackPegs: Field,
-  whitePegs: Field,
+async function publishGuess(
   account: PrivateKey,
   zkAppAddress: PublicKey,
-  zkAppPrivateKey: PrivateKey
+  zkAppPrivateKey: PrivateKey,
+  guess: Pegs
 ) {
   let tx = await Mina.transaction(account, () => {
     let zkApp = new Mastermind(zkAppAddress);
-    zkApp.validateHint(guessInstance, solutionInstance, blackPegs, whitePegs);
+    zkApp.publishGuess(guess);
+    zkApp.sign(zkAppPrivateKey);
+  });
+  try {
+    await tx.send().wait();
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+async function publishHint(
+  account: PrivateKey,
+  zkAppAddress: PublicKey,
+  zkAppPrivateKey: PrivateKey,
+  solutionInstance: Pegs
+) {
+  let tx = await Mina.transaction(account, () => {
+    let zkApp = new Mastermind(zkAppAddress);
+    zkApp.publishHint(solutionInstance);
     zkApp.sign(zkAppPrivateKey);
   });
   try {
@@ -147,19 +197,28 @@ let zkAppInstance = new Mastermind(zkAppAddress);
 
 let publisherAccount = createLocalBlockchain();
 console.log('Local Blockchain Online!');
-await deploy(zkAppInstance, zkAppPrivateKey, publisherAccount);
+
+await deploy(
+  zkAppInstance,
+  zkAppPrivateKey,
+  publisherAccount,
+  new Pegs([1, 2, 3, 4])
+);
 console.log('Contract Deployed!');
-let guess = new Pegs([6, 3, 2, 1]);
-let solution = new Pegs([1, 2, 3, 6]);
-let blackPegs = Field.zero;
-let whitePegs = new Field(4);
-await validateHint(
-  guess,
-  solution,
-  blackPegs,
-  whitePegs,
+
+console.log(zkAppInstance.turnNumber.get().toString());
+
+let guess = new Pegs([1, 2, 3, 5]);
+await publishGuess(publisherAccount, zkAppAddress, publisherAccount, guess);
+console.log('Guess Published!');
+
+console.log(zkAppInstance.turnNumber.get().toString()); // Why is this not incrementing? I don't know I go to bed now.
+
+let solution = new Pegs([1, 2, 3, 4]);
+await publishHint(
   publisherAccount,
   zkAppAddress,
-  zkAppPrivateKey // I'm pretty sure this should be publisherAccount (thus this function should be redefined)
+  publisherAccount, // I'm pretty sure this should be publisherAccount (thus this function should be redefined)
+  solution
 );
-console.log('Guess Valid!');
+console.log('Hint Published');
