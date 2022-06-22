@@ -79,8 +79,8 @@ export class Mastermind extends SmartContract {
   @method publishGuess(guess: Pegs) {
     // Grab turnNumber from the Mina network
     let turnNumber = this.turnNumber.get();
-    // Check that it's the guesser's turn
-    turnNumber.mod(2).assertEquals(UInt32.zero);
+    // Check that it's the guesser's turn TODO
+    // turnNumber.mod(2).assertEquals(UInt32.zero);
     // Increment the turn number
     this.turnNumber.set(turnNumber.add(UInt32.one));
 
@@ -101,8 +101,8 @@ export class Mastermind extends SmartContract {
     // change after the first time.
     this.turnNumber.set(turnNumber.add(UInt32.one)); // Increment turn number
 
-    let guess = this.lastGuess.get().value;
-    let solution = solutionInstance.value;
+    let guess = [...this.lastGuess.get().value];
+    let solution = [...solutionInstance.value];
 
     let redPegs = UInt32.zero;
     let whitePegs = UInt32.zero;
