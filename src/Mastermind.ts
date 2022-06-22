@@ -2,7 +2,6 @@ import {
   Field,
   SmartContract,
   method,
-  DeployArgs,
   Permissions,
   CircuitValue,
   arrayProp,
@@ -13,6 +12,10 @@ import {
   Party,
   isReady,
   shutdown,
+  State,
+  state,
+  Bool,
+  UInt32,
 } from 'snarkyjs';
 
 export { Mastermind, Pegs };
@@ -20,28 +23,77 @@ export { Mastermind, Pegs };
 await isReady;
 
 class Pegs extends CircuitValue {
-  @arrayProp(Field, 4) value: Field[];
+  @arrayProp(Field, 4) pegs: [Field, Field, Field, Field];
 
-  constructor(value: number[]) {
+  constructor(pegs: [Field, Field, Field, Field]) {
     super();
-    this.value = value.map((value) => Field(value));
+    this.pegs = pegs;
   }
 
-  hash() {
-    return Poseidon.hash(this.value);
+  static from(pegs: number[]) {
+    if (pegs.length !== 4) throw Error('must use 4 pegs');
+    let [v0, v1, v2, v3] = pegs;
+    return new Pegs([Field(v0), Field(v1), Field(v2), Field(v3)]);
   }
 }
 
 class Mastermind extends SmartContract {
-  deploy(args: DeployArgs) {
-    super.deploy(args);
-    this.setPermissions({
-      ...Permissions.default(),
-      editState: Permissions.proofOrSignature(),
+  @state(Field) solutionCommitment = State<Field>();
+  @state(Field) blackPegs = State<Field>(); // number of black pegs in last hint, 0,...,4; game is won if == 4
+  @state(Field) whitePegs = State<Field>(); // number of white pegs in last hint, 0,...,4
+  @state(Field) lastGuess = State<Field>(); // uses base6 encoding, or -1 if there was no guess yet
+  @state(UInt32) numberOfMoves = State<UInt32>();
+  // do we also want @state player: PublicKey (to be able to demonstrate that *you* won), and/or @state isWon: Bool?
+
+  @method init(solution: Pegs, zkappKey: PrivateKey) {
+    // only the zkapp owner can call this
+    this.self.publicKey.assertEquals(zkappKey.toPublicKey());
+    // assert that there is no solution commitment yet, so this can only be called once
+    this.solutionCommitment.assertEquals(Field.zero);
+
+    // create a hiding commitment to the solution
+    // trick: convert the PrivateKey to a Field, without adding O(255) constraints
+    let zkappSecret = Circuit.witness(Field, () => {
+      let scalarBits = zkappKey.s.toFields();
+      return Field.ofBits(scalarBits.map(Bool.Unsafe.ofField));
     });
+    let commitment = Poseidon.hash([...solution.pegs, zkappSecret]);
+    this.solutionCommitment.set(commitment);
+    // comments:
+    // --> we hash the zkappSecret together with the solution, so that the solution can't be found by guessing & hashing
+    //     (hiding commitment)
+    // --> connection between zkappKey and zkappSecret doesn't need to be constrained.
+    //     we only need *some* secret that the zkapp owner can reproduce later
+
+    // initializing other state. technically, you don't have to do the zero ones
+    this.blackPegs.set(Field.zero);
+    this.whitePegs.set(Field.zero);
+    this.lastGuess.set(Field.minusOne);
+    this.numberOfMoves.set(UInt32.zero);
   }
 
-  @method init() {}
+  @method makeGuess() {
+    // TODO subset of validateHint
+    /**
+     * check that numberOfMoves % 2 === 0
+     * numberOfMoves++
+     * set last guess, TBD: encode in circuit? check that each peg is in 1,...,6? add .check() to Peg?
+     */
+  }
+
+  @method giveHint() {
+    // TODO subset of validateHint
+    /**
+     * check that numberOfMoves % 2 === 1
+     * numberOfMoves++
+     * unhash solution -- needs private key passed in
+     * read lastGuess, compute black & white pegs in circuit
+     * set black & white pegs
+     *
+     * this method produces a "won" state as a side-effect, if blackPegs === 4
+     * could also set isWon based on that, and prevent further guesses if isWon = true
+     */
+  }
 
   @method validateHint(
     guessInstance: Pegs,
@@ -50,8 +102,8 @@ class Mastermind extends SmartContract {
     claimedWhitePegs: Field
     // solutionHash: Field  Return hash of solution
   ) {
-    let guess = guessInstance.value;
-    let solution = solutionInstance.value;
+    let guess = guessInstance.pegs;
+    let solution = solutionInstance.pegs;
 
     let blackPegs = Field.zero;
     let whitePegs = Field.zero;
@@ -97,26 +149,31 @@ class Mastermind extends SmartContract {
 
 let zkAppPrivateKey = PrivateKey.random();
 let zkAppAddress = zkAppPrivateKey.toPublicKey();
-let zkAppInstance = new Mastermind(zkAppAddress);
+let zkapp = new Mastermind(zkAppAddress);
+
+// console.log('compiling...');
+// await Mastermind.compile(zkAppAddress);
 
 let Local = Mina.LocalBlockchain();
 Mina.setActiveInstance(Local);
 const publisherAccount = Local.testAccounts[0].privateKey;
-
 console.log('Local Blockchain Online!');
+
+let solution = Pegs.from([1, 2, 3, 6]);
 let tx = await Mina.transaction(publisherAccount, () => {
   Party.fundNewAccount(publisherAccount);
-  zkAppInstance.deploy({ zkappKey: zkAppPrivateKey });
-  zkAppInstance.setPermissions({
+  zkapp.deploy({ zkappKey: zkAppPrivateKey });
+  zkapp.setPermissions({
     ...Permissions.default(),
     editState: Permissions.proofOrSignature(),
   });
+  // TODO create proof
+  zkapp.init(solution, zkAppPrivateKey);
 });
 tx.send().wait();
-
 console.log('Contract Deployed!');
-let guess = new Pegs([6, 3, 2, 1]);
-let solution = new Pegs([1, 2, 3, 6]);
+
+let guess = Pegs.from([6, 3, 2, 1]);
 let blackPegs = Field.zero;
 let whitePegs = new Field(4);
 tx = await Mina.transaction(publisherAccount, () => {

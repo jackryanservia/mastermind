@@ -13,5 +13,6 @@ module.exports = {
   plugins: ['@typescript-eslint', 'snarkyjs'],
   rules: {
     'no-redeclare': 'off',
+    'no-unused-vars': 'warn',
   },
 };
