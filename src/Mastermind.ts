@@ -80,6 +80,10 @@ export class Mastermind extends SmartContract {
     let redPegs = UInt32.zero;
     let whitePegs = UInt32.zero;
 
+    // Check that solution instance is the one that code generator committed to when they deployed the contract
+    let solutionHash = this.solutionHash.get();
+    solutionInstance.hash().assertEquals(solutionHash);
+
     // Assert that all values are between 1 and 6 (for the 6 different colored pegs)
     for (let i = 0; i < 4; i++) {
       guess[i].assertGte(Field.one);
@@ -113,10 +117,6 @@ export class Mastermind extends SmartContract {
         solution[j] = Circuit.if(isWhitePeg, Field.zero, solution[j]);
       }
     }
-
-    // Check that solution instance is the one that code generator committed to when they deployed the contract
-    let solutionHash = this.solutionHash.get();
-    solutionInstance.hash().assertEquals(solutionHash); // Is this constrained
 
     // Set red and white pegs
     this.redPegs.set(redPegs);
@@ -198,27 +198,24 @@ let zkAppInstance = new Mastermind(zkAppAddress);
 let publisherAccount = createLocalBlockchain();
 console.log('Local Blockchain Online!');
 
-await deploy(
-  zkAppInstance,
-  zkAppPrivateKey,
-  publisherAccount,
-  new Pegs([1, 2, 3, 4])
+let secretCode = new Pegs([1, 2, 3, 4]);
+await deploy(zkAppInstance, zkAppPrivateKey, publisherAccount, secretCode);
+console.log('Contract Deployed! ' + secretCode.toFields().toString());
+
+let guess = new Pegs([4, 3, 2, 1]);
+await publishGuess(publisherAccount, zkAppAddress, zkAppPrivateKey, guess);
+console.log(
+  'Guess Published! ' + zkAppInstance.lastGuess.get().toFields().toString()
 );
-console.log('Contract Deployed!');
-
-console.log(zkAppInstance.turnNumber.get().toString());
-
-let guess = new Pegs([1, 2, 3, 5]);
-await publishGuess(publisherAccount, zkAppAddress, publisherAccount, guess);
-console.log('Guess Published!');
-
-console.log(zkAppInstance.turnNumber.get().toString()); // Why is this not incrementing? I don't know I go to bed now.
 
 let solution = new Pegs([1, 2, 3, 4]);
 await publishHint(
   publisherAccount,
   zkAppAddress,
-  publisherAccount, // I'm pretty sure this should be publisherAccount (thus this function should be redefined)
+  zkAppPrivateKey, // I'm pretty sure this should be publisherAccount (thus this function should be redefined)
   solution
 );
 console.log('Hint Published');
+
+console.log('Red: ' + zkAppInstance.redPegs.get().toString());
+console.log('White: ' + zkAppInstance.whitePegs.get().toString());
