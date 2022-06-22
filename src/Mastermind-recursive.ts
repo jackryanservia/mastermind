@@ -9,12 +9,14 @@ import {
   ZkProgram,
   prop,
   SelfProof,
+  shutdown,
 } from 'snarkyjs';
 
 export { Pegs, Mastermind };
 
 await isReady;
 
+//  same as before:
 // Define a CircuitValue for our code pegs
 class Pegs extends CircuitValue {
   @arrayProp(Field, 4) value: Field[];
@@ -59,6 +61,23 @@ class MastermindState extends CircuitValue {
     this.redPegs = redPegs;
     this.whitePegs = whitePegs;
     this.turnNumber = turnNumber;
+  }
+
+  // helper
+  static from(state: {
+    lastGuess: Pegs;
+    solutionHash: Field;
+    redPegs: Field;
+    whitePegs: Field;
+    turnNumber: UInt32;
+  }) {
+    return new this(
+      state.lastGuess,
+      state.solutionHash,
+      state.redPegs,
+      state.whitePegs,
+      state.turnNumber
+    );
   }
 }
 
@@ -201,3 +220,134 @@ let Mastermind = ZkProgram({
     },
   },
 });
+
+console.log('compiling...');
+await Mastermind.compile();
+
+let solution = new Pegs([1, 2, 3, 6]);
+
+// initialize (== create the first proof)
+console.log('prove... (init)');
+let initialState = init(solution);
+let initialProof = await Mastermind.init(initialState, solution); // <-- no class instantiation, just calling a function to create proof
+
+console.log('Proof state initialized!');
+
+// to make a guess, a user would fetch the initial proof from a server, and then run this:
+
+let guess = new Pegs([6, 2, 1, 3]);
+let userState = publishGuess(guess, initialProof);
+let userProof = await Mastermind.publishGess(userState, guess, initialProof);
+
+console.log('Guess Valid!');
+
+// user would now post the userProof to the server, and wait for it to publish a hint in form of another proof
+
+let serverState = publishHint(solution, userProof);
+let serverProof = await Mastermind.publishHint(
+  serverState,
+  solution,
+  userProof
+);
+
+console.log('Red: ' + serverProof.publicInput.redPegs.toString());
+console.log('White: ' + serverProof.publicInput.whitePegs.toString());
+
+// back to the user, who makes another guess:
+
+guess = new Pegs([1, 2, 3, 6]);
+userState = publishGuess(guess, serverProof);
+userProof = await Mastermind.publishGess(userState, guess, serverProof);
+
+console.log('Guess Valid!');
+
+// server published another hint:
+
+serverState = publishHint(solution, userProof);
+serverProof = await Mastermind.publishHint(serverState, solution, userProof);
+
+console.log('Red: ' + serverProof.publicInput.redPegs.toString());
+console.log('White: ' + serverProof.publicInput.whitePegs.toString());
+
+// the serverProof that we have now has a publicInput with redPegs === 4, which means the game is won
+// if you verify it, you *know* that someone ran the methods above to produce this winning state
+
+shutdown();
+
+// versions of our functions that produce current from old state
+// plain functions, no circuits
+
+// COMING SOON: these won't be necessary, because ZkPrograms can have a **public output** in addition to a public input
+// ...which will really also be a part of the public input in the crypto sense, but nicer to use
+
+function init(solution: Pegs) {
+  // no checks here, just producing the initial state
+  return MastermindState.from({
+    solutionHash: solution.hash(),
+    lastGuess: new Pegs([0, 0, 0, 0]),
+    redPegs: Field.zero,
+    whitePegs: Field.zero,
+    turnNumber: UInt32.zero,
+  });
+}
+
+function publishGuess(
+  guess: Pegs, // as before
+  previousProof: SelfProof<MastermindState> // RECURSION!!!
+) {
+  return MastermindState.from({
+    ...previousProof.publicInput,
+    // Increment the turn number
+    turnNumber: previousProof.publicInput.turnNumber.add(UInt32.one),
+    // Set lastGuess to new guess
+    lastGuess: guess,
+  });
+}
+
+function publishHint(
+  solutionInstance: Pegs,
+  previousProof: SelfProof<MastermindState>
+) {
+  let guess = [...previousProof.publicInput.lastGuess.value];
+  let solution = [...solutionInstance.value];
+
+  let redPegs = Field.zero;
+  let whitePegs = Field.zero;
+
+  // Count red pegs
+  for (let i = 0; i < 4; i++) {
+    let isCorrectPeg = guess[i].equals(solution[i]);
+    // Increment redPegs if player guessed the correct peg in the i place
+    redPegs = Circuit.if(isCorrectPeg, redPegs.add(Field.one), redPegs);
+    // Set values in guess[i] and solution[i] to zero (remove pegs) if they match so that we can ignore them when calculating white pegs.
+    guess[i] = Circuit.if(isCorrectPeg, Field.zero, guess[i]);
+    solution[i] = Circuit.if(isCorrectPeg, Field.zero, solution[i]);
+  }
+
+  // Count white pegs
+  // Step through every solution peg for every guessed peg
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      // Check if the pegs are the same color
+      let isCorrectColor = guess[i].equals(solution[j]);
+      // Check that the peg exists (we might have removed it when calculating // red pegs)
+      let isNotRedPeg = guess[i].gt(Field.zero);
+      // If the pegs in these locations exist and they are the same color
+      // then we should add a white peg
+      let isWhitePeg = isCorrectColor.and(isNotRedPeg);
+      whitePegs = Circuit.if(isWhitePeg, whitePegs.add(Field.one), whitePegs);
+      // Set the values in guess[i] and solution[i] to zero (remove pegs) so that they wont be counted again
+      guess[i] = Circuit.if(isWhitePeg, Field.zero, guess[i]);
+      solution[j] = Circuit.if(isWhitePeg, Field.zero, solution[j]);
+    }
+  }
+
+  return MastermindState.from({
+    ...previousProof.publicInput,
+    // Increment turn number
+    turnNumber: previousProof.publicInput.turnNumber.add(UInt32.one),
+    // Update red and white peg counts
+    redPegs,
+    whitePegs,
+  });
+}
