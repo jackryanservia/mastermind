@@ -2,245 +2,250 @@ import {
   Field,
   SmartContract,
   method,
+  DeployArgs,
   Permissions,
+  state,
+  State,
   CircuitValue,
   arrayProp,
   Poseidon,
   Circuit,
   PrivateKey,
+  PublicKey,
   Mina,
   Party,
   isReady,
-  shutdown,
-  State,
-  state,
-  Bool,
   UInt32,
 } from 'snarkyjs';
 
-export { Mastermind, Pegs };
+export { Pegs };
 
 await isReady;
 
+// Define a CircuitValue for our code pegs
 class Pegs extends CircuitValue {
-  @arrayProp(Field, 4) pegs: [Field, Field, Field, Field];
+  @arrayProp(Field, 4) value: Field[];
 
-  constructor(pegs: [Field, Field, Field, Field]) {
+  constructor(value: number[]) {
     super();
-    this.pegs = pegs;
+    this.value = value.map((value) => Field(value));
   }
 
-  static from(pegs: number[]) {
-    if (pegs.length !== 4) throw Error('must use 4 pegs');
-    let [v0, v1, v2, v3] = pegs;
-    return new Pegs([Field(v0), Field(v1), Field(v2), Field(v3)]);
-  }
-
-  // check: make assertions on *every* variable that is created
-  // example: Bool.check asserts that Bool is 0 or 1 --> x*(x-1) === 0
-  // will be called under the hood when passing variables to methods, and when creating them with Circuit.witness
-  static check({ pegs }: Pegs) {
-    for (let x of pegs) {
-      // check that x is between 1,...,6
-
-      // naive method:
-      // x.assertGte(Field.one);
-      // x.assertLte(Field(6));
-      // --> bad because `Gte`, `Lte` need boolean unpacking
-      // --> O(255) generic PLONK gates
-      // --> will get more efficient soon-ish, when snarkyjs gets an efficient "range check gate" using plookup
-
-      // less naive: check that (x-1)*...*(x-6) === 0
-      x.sub(1)
-        .mul(x.sub(2))
-        .mul(x.sub(3))
-        .mul(x.sub(4))
-        .mul(x.sub(5))
-        .mul(x.sub(6))
-        .assertEquals(0);
-      // --> ~6-12 generic gates
-      // --> O(n) where n=6
-
-      // remark: optimal method needs only 3 generic gates
-      // --> represent peg as one of w^1, ..., w^6 where w is 6th root of unity
-      // --> check that x^6 === 1
-      // --> x^6 can be computed with 3 multiplications, (x^2 * x)^2
-      // --> O(log(n)) where n=6
-
-      // remark 2: you might not need defensive checks for certain properties
-      // --> think carefully about what you want to prove, in what method
-    }
-  }
-
-  toString() {
-    return JSON.stringify(this.pegs.map(String));
+  // Hash the peg configuration to create a commitment that we can store
+  // on-chain which won't reveal the code.
+  hash() {
+    return Poseidon.hash(this.value);
   }
 }
 
-class Mastermind extends SmartContract {
-  @state(Field) solutionCommitment = State<Field>();
-  @state(Field) blackPegs = State<Field>(); // number of black pegs in last hint, 0,...,4; game is won if == 4
-  @state(Field) whitePegs = State<Field>(); // number of white pegs in last hint, 0,...,4
+export class Mastermind extends SmartContract {
+  // Store the last guess so that we can generate a hint for it
   @state(Pegs) lastGuess = State<Pegs>();
+  // Store a hash of the solution so that the code generator can't change the
+  // code after the contract is deployed.
+  @state(Field) solutionHash = State<Field>();
+  // The number of red pegs for the last guess
+  @state(UInt32) redPegs = State<UInt32>();
+  // The number of white pegs for the last guess
+  @state(UInt32) whitePegs = State<UInt32>();
+  // The number of turns (will be incremented whenever a player calls
+  // publishHint or publishGuess).
   @state(UInt32) turnNumber = State<UInt32>();
-  // do we also want @state player: PublicKey (to be able to demonstrate that *you* won), and/or @state isWon: Bool?
-  // in that case, need base6 encoding for the lastGuess, or -1 if there was no guess yet
 
-  @method init(solution: Pegs, zkappKey: PrivateKey, zkappSecret: Field) {
-    // only the zkapp owner can call this
-    this.self.publicKey.assertEquals(zkappKey.toPublicKey());
-    // assert that there is no solution commitment yet, so this can only be called once
-    this.solutionCommitment.assertEquals(Field.zero);
+  deploy(args: DeployArgs) {
+    super.deploy(args);
+    this.setPermissions({
+      ...Permissions.default(),
+      editState: Permissions.proofOrSignature(),
+    });
+  }
 
-    // create a hiding commitment to the solution
-    let commitment = Poseidon.hash([...solution.pegs, zkappSecret]);
-    this.solutionCommitment.set(commitment);
-    // comments:
-    // --> we hash the zkappSecret together with the solution, so that the solution can't be found by guessing & hashing
-    //     (hiding commitment)
-    // --> connection between zkappKey and zkappSecret doesn't need to be constrained.
-    //     we only need *some* secret that the zkapp owner can reproduce later
-
-    // initializing other state. technically, you don't have to do the zero ones
-    this.blackPegs.set(Field.zero);
-    this.whitePegs.set(Field.zero);
-    this.lastGuess.set(Pegs.from([0, 0, 0, 0]));
+  @method init(solution: Pegs) {
+    // Check that the solution is valid so the code generator can't create an
+    // illegal game.
+    for (let i = 0; i < 4; i++) {
+      solution.value[i].assertGte(Field.one);
+      solution.value[i].assertLte(new Field(6));
+    }
+    // Store a hash of the solution so the code generator can't change the code // in the middle of the game.
+    this.solutionHash.set(solution.hash());
+    // Set the initial guess to zeros (absent pegs)
+    this.lastGuess.set(new Pegs([0, 0, 0, 0]));
+    this.redPegs.set(UInt32.zero);
+    this.whitePegs.set(UInt32.zero);
     this.turnNumber.set(UInt32.zero);
   }
 
-  /**
-   * check that numberOfMoves % 2 === 0
-   * numberOfMoves++
-   * set last guess
-   * TBD: need to check that each peg is in 1,..,6?
-   */
   @method publishGuess(guess: Pegs) {
-    let turnNumber = this.turnNumber.get(); // Grab turnNumber from Mina network
-    this.turnNumber.assertEquals(turnNumber); // add "precondition", so that turnNumber can't be set to anything else than what's currently on the ledger
-    turnNumber.mod(2).assertEquals(UInt32.zero); // Check that it is the guesser's turn
-    // remark: UInt32 is not very efficient, does range check on every operation
-    // but will be just ~1 constraint soon with plookup range check
-    this.turnNumber.set(turnNumber.add(UInt32.one)); // Increment turn number
+    // Grab turnNumber from the Mina network
+    let turnNumber = this.turnNumber.get();
+    // Check that it's the guesser's turn
+    turnNumber.mod(2).assertEquals(UInt32.zero);
+    // Increment the turn number
+    this.turnNumber.set(turnNumber.add(UInt32.one));
+
+    // Check that all values are between 1 and 6 (peg configuration is legal)
+    for (let i = 0; i < 4; i++) {
+      guess.value[i].assertGte(Field.one);
+      guess.value[i].assertLte(new Field(6));
+    }
+
     this.lastGuess.set(guess); // Set lastGuess to new guess
   }
 
-  @method giveHint() {
-    // TODO subset of validateHint
-    /**
-     * check that numberOfMoves % 2 === 1
-     * numberOfMoves++
-     * unhash solution -- needs private key passed in
-     * read lastGuess, compute black & white pegs in circuit
-     * set black & white pegs
-     *
-     * this method produces a "won" state as a side-effect, if blackPegs === 4
-     * could also set isWon based on that, and prevent further guesses if isWon = true
-     */
-  }
+  @method publishHint(solutionInstance: Pegs) {
+    let turnNumber = this.turnNumber.get(); // Grab turnNumber from Mina network
+    // There is no need to check that it's the code generators turn because
+    // their behavior is entirely determined by the last guess.
+    // If code generator calls publishHint five times in a row nothing will
+    // change after the first time.
+    this.turnNumber.set(turnNumber.add(UInt32.one)); // Increment turn number
 
-  @method validateHint(
-    guessInstance: Pegs,
-    solutionInstance: Pegs,
-    claimedBlackPegs: Field,
-    claimedWhitePegs: Field
-    // solutionHash: Field  Return hash of solution
-  ) {
-    let guess = guessInstance.pegs;
-    let solution = solutionInstance.pegs;
+    let guess = this.lastGuess.get().value;
+    let solution = solutionInstance.value;
 
-    let blackPegs = Field.zero;
-    let whitePegs = Field.zero;
+    let redPegs = UInt32.zero;
+    let whitePegs = UInt32.zero;
 
-    // Count black pegs
+    // Check that solution instance matches the one the code generator
+    // committed to when they deployed the contract.
+    let solutionHash = this.solutionHash.get();
+    solutionHash.assertEquals(solutionInstance.hash());
+
+    // There is no need to check that values are between 1 and 6 (for the 6
+    // different colored pegs). They are checked when the solution is set
+    // (it can not be changed), and when the guess is published.
+
+    // Count red pegs
     for (let i = 0; i < 4; i++) {
       let isCorrectPeg = guess[i].equals(solution[i]);
-      // Increment blackPegs if player guessed the correct peg in the i place
-      blackPegs = Circuit.if(isCorrectPeg, blackPegs.add(Field.one), blackPegs);
-
-      // Set values in guess[i] and solution[i] to zero if they match so that we can ignore them when calculating white pegs.
+      // Increment redPegs if player guessed the correct peg in the i place
+      redPegs = Circuit.if(isCorrectPeg, redPegs.add(UInt32.one), redPegs);
+      // Set values in guess[i] and solution[i] to zero (remove pegs) if they match so that we can ignore them when calculating white pegs.
       guess[i] = Circuit.if(isCorrectPeg, Field.zero, guess[i]);
       solution[i] = Circuit.if(isCorrectPeg, Field.zero, solution[i]);
     }
 
     // Count white pegs
+    // Step through every solution peg for every guessed peg
     for (let i = 0; i < 4; i++) {
       for (let j = 0; j < 4; j++) {
+        // Check if the pegs are the same color
         let isCorrectColor = guess[i].equals(solution[j]);
-        let isNotBlackPeg = guess[i].equals(Field.zero).not(); // This works, right? Any value is greater than zero? It's impossible to overflow?
-        let isWhitePeg = isCorrectColor.and(isNotBlackPeg);
-        whitePegs = Circuit.if(isWhitePeg, whitePegs.add(Field.one), whitePegs);
+        // Check that the peg exists (we might have removed it when calculating // red pegs)
+        let isNotRedPeg = guess[i].gt(Field.zero);
+        // If the pegs in these locations exist and they are the same color
+        // then we should add a white peg
+        let isWhitePeg = isCorrectColor.and(isNotRedPeg);
+        whitePegs = Circuit.if(
+          isWhitePeg,
+          whitePegs.add(UInt32.one),
+          whitePegs
+        );
+        // Set the values in guess[i] and solution[i] to zero (remove pegs) so that they wont be counted again
         guess[i] = Circuit.if(isWhitePeg, Field.zero, guess[i]);
         solution[j] = Circuit.if(isWhitePeg, Field.zero, solution[j]);
       }
     }
 
-    // Check peg numbers
-    blackPegs.assertEquals(claimedBlackPegs);
-    whitePegs.assertEquals(claimedWhitePegs);
+    // Update on-chain red and white peg counts
+    this.redPegs.set(redPegs);
+    this.whitePegs.set(whitePegs);
   }
 }
 
 // Run
 
-let withProofs = true; // TODO: make this a config option of LocalBlockchain
+function createLocalBlockchain(): PrivateKey {
+  let Local = Mina.LocalBlockchain();
+  Mina.setActiveInstance(Local);
 
-let zkAppPrivateKey = PrivateKey.random();
-let zkAppAddress = zkAppPrivateKey.toPublicKey();
-let zkapp = new Mastermind(zkAppAddress);
-
-let Local = Mina.LocalBlockchain();
-Mina.setActiveInstance(Local);
-const publisherAccount = Local.testAccounts[0].privateKey;
-console.log('Local Blockchain Online!');
-
-if (withProofs) {
-  console.log('compiling...');
-  await Mastermind.compile(zkAppAddress);
+  const account = Local.testAccounts[0].privateKey;
+  return account;
 }
 
-let solution = Pegs.from([1, 2, 3, 6]);
-let tx = await Mina.transaction(publisherAccount, () => {
-  Party.fundNewAccount(publisherAccount);
-  zkapp.deploy({ zkappKey: zkAppPrivateKey });
-  if (!withProofs) {
-    zkapp.setPermissions({
+async function deploy(
+  zkAppInstance: Mastermind,
+  zkAppPrivateKey: PrivateKey,
+  account: PrivateKey,
+  code: Pegs
+) {
+  let tx = await Mina.transaction(account, () => {
+    Party.fundNewAccount(account);
+    zkAppInstance.deploy({ zkappKey: zkAppPrivateKey });
+    zkAppInstance.setPermissions({
       ...Permissions.default(),
       editState: Permissions.proofOrSignature(),
     });
+
+    zkAppInstance.init(code);
+  });
+  await tx.send().wait();
+}
+
+async function publishGuess(
+  account: PrivateKey,
+  zkAppAddress: PublicKey,
+  zkAppPrivateKey: PrivateKey,
+  guess: Pegs
+) {
+  let tx = await Mina.transaction(account, () => {
+    let zkApp = new Mastermind(zkAppAddress);
+    zkApp.publishGuess(guess);
+    zkApp.sign(zkAppPrivateKey);
+  });
+  try {
+    await tx.send().wait();
+    return true;
+  } catch (err) {
+    return false;
   }
-});
-tx.send().wait();
-console.log('Contract Deployed!');
-
-// trick: convert zkapp PrivateKey to a Field, to get a secret that can be hashed without adding O(255) constraints
-let scalarBits = zkAppPrivateKey.s.toFields();
-let zkappSecret = Field.ofBits(scalarBits.map(Bool.Unsafe.ofField));
-// TODO: investigate why this didn't work in a Circuit.witness block inside the method
-
-tx = await Mina.transaction(publisherAccount, () => {
-  zkapp.init(solution, zkAppPrivateKey, zkappSecret);
-  if (!withProofs) zkapp.sign(zkAppPrivateKey);
-});
-if (withProofs) {
-  console.log('proving...');
-  await tx.prove();
 }
-tx.send().wait();
 
-let guess = Pegs.from([6, 3, 2, 1]);
-let blackPegs = Field.zero;
-let whitePegs = new Field(4);
-tx = await Mina.transaction(publisherAccount, () => {
-  let zkapp = new Mastermind(zkAppAddress);
-  zkapp.validateHint(guess, solution, blackPegs, whitePegs);
-  if (!withProofs) zkapp.sign(zkAppPrivateKey);
-});
-if (withProofs) {
-  console.log('proving...');
-  await tx.prove();
+async function publishHint(
+  account: PrivateKey,
+  zkAppAddress: PublicKey,
+  zkAppPrivateKey: PrivateKey,
+  solutionInstance: Pegs
+) {
+  let tx = await Mina.transaction(account, () => {
+    let zkApp = new Mastermind(zkAppAddress);
+    zkApp.publishHint(solutionInstance);
+    zkApp.sign(zkAppPrivateKey);
+  });
+  try {
+    await tx.send().wait();
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
-tx.send().wait();
 
-console.log('Guess Valid!');
+let zkAppPrivateKey = PrivateKey.random();
+let zkAppAddress = zkAppPrivateKey.toPublicKey();
+let zkAppInstance = new Mastermind(zkAppAddress);
 
-shutdown();
+let publisherAccount = createLocalBlockchain();
+console.log('Local Blockchain Online!');
+
+let secretCode = new Pegs([1, 1, 1, 1]);
+await deploy(zkAppInstance, zkAppPrivateKey, publisherAccount, secretCode);
+console.log('Contract Deployed! ' + secretCode.toFields().toString());
+
+let guess = new Pegs([4, 3, 2, 1]);
+await publishGuess(publisherAccount, zkAppAddress, zkAppPrivateKey, guess);
+console.log(
+  'Guess Published! ' + zkAppInstance.lastGuess.get().toFields().toString()
+);
+
+let solution = new Pegs([1, 1, 1, 1]);
+await publishHint(
+  publisherAccount,
+  zkAppAddress,
+  zkAppPrivateKey, // I'm pretty sure this should be publisherAccount (thus this function should be redefined)
+  solution
+);
+console.log('Hint Published');
+
+console.log('Red: ' + zkAppInstance.redPegs.get().toString());
+console.log('White: ' + zkAppInstance.whitePegs.get().toString());
