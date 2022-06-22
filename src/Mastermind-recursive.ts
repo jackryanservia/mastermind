@@ -235,6 +235,7 @@ console.log('Proof state initialized!');
 
 // to make a guess, a user would fetch the initial proof from a server, and then run this:
 
+console.log('prove... (guess)');
 let guess = new Pegs([6, 2, 1, 3]);
 let userState = publishGuess(guess, initialProof);
 let userProof = await Mastermind.publishGess(userState, guess, initialProof);
@@ -243,6 +244,7 @@ console.log('Guess Valid!');
 
 // user would now post the userProof to the server, and wait for it to publish a hint in form of another proof
 
+console.log('prove... (hint)');
 let serverState = publishHint(solution, userProof);
 let serverProof = await Mastermind.publishHint(
   serverState,
@@ -255,6 +257,7 @@ console.log('White: ' + serverProof.publicInput.whitePegs.toString());
 
 // back to the user, who makes another guess:
 
+console.log('prove... (guess)');
 guess = new Pegs([1, 2, 3, 6]);
 userState = publishGuess(guess, serverProof);
 userProof = await Mastermind.publishGess(userState, guess, serverProof);
@@ -263,6 +266,7 @@ console.log('Guess Valid!');
 
 // server published another hint:
 
+console.log('prove... (hint)');
 serverState = publishHint(solution, userProof);
 serverProof = await Mastermind.publishHint(serverState, solution, userProof);
 
