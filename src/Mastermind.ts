@@ -221,31 +221,31 @@ async function publishHint(
   }
 }
 
-let zkAppPrivateKey = PrivateKey.random();
-let zkAppAddress = zkAppPrivateKey.toPublicKey();
-let zkAppInstance = new Mastermind(zkAppAddress);
+// let zkAppPrivateKey = PrivateKey.random();
+// let zkAppAddress = zkAppPrivateKey.toPublicKey();
+// let zkAppInstance = new Mastermind(zkAppAddress);
 
-let publisherAccount = createLocalBlockchain();
-console.log('Local Blockchain Online!');
+// let publisherAccount = createLocalBlockchain();
+// console.log('Local Blockchain Online!');
 
-let secretCode = new Pegs([1, 1, 1, 1]);
-await deploy(zkAppInstance, zkAppPrivateKey, publisherAccount, secretCode);
-console.log('Contract Deployed! ' + secretCode.toFields().toString());
+// let secretCode = new Pegs([1, 1, 1, 1]);
+// await deploy(zkAppInstance, zkAppPrivateKey, publisherAccount, secretCode);
+// console.log('Contract Deployed! ' + secretCode.toFields().toString());
 
-let guess = new Pegs([4, 3, 2, 1]);
-await publishGuess(publisherAccount, zkAppAddress, zkAppPrivateKey, guess);
-console.log(
-  'Guess Published! ' + zkAppInstance.lastGuess.get().toFields().toString()
-);
+// let guess = new Pegs([4, 3, 2, 1]);
+// await publishGuess(publisherAccount, zkAppAddress, zkAppPrivateKey, guess);
+// console.log(
+//   'Guess Published! ' + zkAppInstance.lastGuess.get().toFields().toString()
+// );
 
-let solution = new Pegs([1, 1, 1, 1]);
-await publishHint(
-  publisherAccount,
-  zkAppAddress,
-  zkAppPrivateKey, // I'm pretty sure this should be publisherAccount (thus this function should be redefined)
-  solution
-);
-console.log('Hint Published');
+// let solution = new Pegs([1, 1, 1, 1]);
+// await publishHint(
+//   publisherAccount,
+//   zkAppAddress,
+//   zkAppPrivateKey, // I'm pretty sure this should be publisherAccount (thus this function should be redefined)
+//   solution
+// );
+// console.log('Hint Published');
 
-console.log('Red: ' + zkAppInstance.redPegs.get().toString());
-console.log('White: ' + zkAppInstance.whitePegs.get().toString());
+// console.log('Red: ' + zkAppInstance.redPegs.get().toString());
+// console.log('White: ' + zkAppInstance.whitePegs.get().toString());
