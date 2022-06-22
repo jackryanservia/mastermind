@@ -20,6 +20,8 @@ import {
 
 // Zoom to 54-33 lines
 
+export { Pegs };
+
 await isReady;
 
 class Pegs extends CircuitValue {
