@@ -2,18 +2,12 @@ import {
   Field,
   SmartContract,
   method,
-  DeployArgs,
-  Permissions,
   state,
   State,
   CircuitValue,
   arrayProp,
   Poseidon,
   Circuit,
-  PrivateKey,
-  PublicKey,
-  Mina,
-  Party,
   isReady,
   UInt32,
 } from 'snarkyjs';
@@ -45,20 +39,12 @@ export class Mastermind extends SmartContract {
   // code after the contract is deployed.
   @state(Field) solutionHash = State<Field>();
   // The number of red pegs for the last guess
-  @state(UInt32) redPegs = State<UInt32>();
+  @state(Field) redPegs = State<Field>();
   // The number of white pegs for the last guess
-  @state(UInt32) whitePegs = State<UInt32>();
+  @state(Field) whitePegs = State<Field>();
   // The number of turns (will be incremented whenever a player calls
   // publishHint or publishGuess).
   @state(UInt32) turnNumber = State<UInt32>();
-
-  deploy(args: DeployArgs) {
-    super.deploy(args);
-    this.setPermissions({
-      ...Permissions.default(),
-      editState: Permissions.proofOrSignature(),
-    });
-  }
 
   @method init(solution: Pegs) {
     // Check that the solution is valid so the code generator can't create an
@@ -71,8 +57,8 @@ export class Mastermind extends SmartContract {
     this.solutionHash.set(solution.hash());
     // Set the initial guess to zeros (absent pegs)
     this.lastGuess.set(new Pegs([0, 0, 0, 0]));
-    this.redPegs.set(UInt32.zero);
-    this.whitePegs.set(UInt32.zero);
+    this.redPegs.set(Field.zero);
+    this.whitePegs.set(Field.zero);
     this.turnNumber.set(UInt32.zero);
   }
 
@@ -104,8 +90,8 @@ export class Mastermind extends SmartContract {
     let guess = [...this.lastGuess.get().value];
     let solution = [...solutionInstance.value];
 
-    let redPegs = UInt32.zero;
-    let whitePegs = UInt32.zero;
+    let redPegs = Field.zero;
+    let whitePegs = Field.zero;
 
     // Check that solution instance matches the one the code generator
     // committed to when they deployed the contract.
@@ -120,7 +106,7 @@ export class Mastermind extends SmartContract {
     for (let i = 0; i < 4; i++) {
       let isCorrectPeg = guess[i].equals(solution[i]);
       // Increment redPegs if player guessed the correct peg in the i place
-      redPegs = Circuit.if(isCorrectPeg, redPegs.add(UInt32.one), redPegs);
+      redPegs = Circuit.if(isCorrectPeg, redPegs.add(Field.one), redPegs);
       // Set values in guess[i] and solution[i] to zero (remove pegs) if they match so that we can ignore them when calculating white pegs.
       guess[i] = Circuit.if(isCorrectPeg, Field.zero, guess[i]);
       solution[i] = Circuit.if(isCorrectPeg, Field.zero, solution[i]);
@@ -139,7 +125,7 @@ export class Mastermind extends SmartContract {
         let isWhitePeg = isCorrectColor.and(isNotRedPeg);
         whitePegs = Circuit.if(
           isWhitePeg,
-          whitePegs.add(UInt32.one),
+          whitePegs.add(Field.one),
           whitePegs
         );
         // Set the values in guess[i] and solution[i] to zero (remove pegs) so that they wont be counted again
@@ -153,99 +139,3 @@ export class Mastermind extends SmartContract {
     this.whitePegs.set(whitePegs);
   }
 }
-
-// Run
-
-function createLocalBlockchain(): PrivateKey {
-  let Local = Mina.LocalBlockchain();
-  Mina.setActiveInstance(Local);
-
-  const account = Local.testAccounts[0].privateKey;
-  return account;
-}
-
-async function deploy(
-  zkAppInstance: Mastermind,
-  zkAppPrivateKey: PrivateKey,
-  account: PrivateKey,
-  code: Pegs
-) {
-  let tx = await Mina.transaction(account, () => {
-    Party.fundNewAccount(account);
-    zkAppInstance.deploy({ zkappKey: zkAppPrivateKey });
-    zkAppInstance.setPermissions({
-      ...Permissions.default(),
-      editState: Permissions.proofOrSignature(),
-    });
-
-    zkAppInstance.init(code);
-  });
-  await tx.send().wait();
-}
-
-async function publishGuess(
-  account: PrivateKey,
-  zkAppAddress: PublicKey,
-  zkAppPrivateKey: PrivateKey,
-  guess: Pegs
-) {
-  let tx = await Mina.transaction(account, () => {
-    let zkApp = new Mastermind(zkAppAddress);
-    zkApp.publishGuess(guess);
-    zkApp.sign(zkAppPrivateKey);
-  });
-  try {
-    await tx.send().wait();
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
-async function publishHint(
-  account: PrivateKey,
-  zkAppAddress: PublicKey,
-  zkAppPrivateKey: PrivateKey,
-  solutionInstance: Pegs
-) {
-  let tx = await Mina.transaction(account, () => {
-    let zkApp = new Mastermind(zkAppAddress);
-    zkApp.publishHint(solutionInstance);
-    zkApp.sign(zkAppPrivateKey);
-  });
-  try {
-    await tx.send().wait();
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
-// let zkAppPrivateKey = PrivateKey.random();
-// let zkAppAddress = zkAppPrivateKey.toPublicKey();
-// let zkAppInstance = new Mastermind(zkAppAddress);
-
-// let publisherAccount = createLocalBlockchain();
-// console.log('Local Blockchain Online!');
-
-// let secretCode = new Pegs([1, 1, 1, 1]);
-// await deploy(zkAppInstance, zkAppPrivateKey, publisherAccount, secretCode);
-// console.log('Contract Deployed! ' + secretCode.toFields().toString());
-
-// let guess = new Pegs([4, 3, 2, 1]);
-// await publishGuess(publisherAccount, zkAppAddress, zkAppPrivateKey, guess);
-// console.log(
-//   'Guess Published! ' + zkAppInstance.lastGuess.get().toFields().toString()
-// );
-
-// let solution = new Pegs([1, 1, 1, 1]);
-// await publishHint(
-//   publisherAccount,
-//   zkAppAddress,
-//   zkAppPrivateKey, // I'm pretty sure this should be publisherAccount (thus this function should be redefined)
-//   solution
-// );
-// console.log('Hint Published');
-
-// console.log('Red: ' + zkAppInstance.redPegs.get().toString());
-// console.log('White: ' + zkAppInstance.whitePegs.get().toString());
