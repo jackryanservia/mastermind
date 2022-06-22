@@ -36,6 +36,42 @@ class Pegs extends CircuitValue {
     return new Pegs([Field(v0), Field(v1), Field(v2), Field(v3)]);
   }
 
+  // check: make assertions on *every* variable that is created
+  // example: Bool.check asserts that Bool is 0 or 1 --> x*(x-1) === 0
+  // will be called under the hood when passing variables to methods, and when creating them with Circuit.witness
+  static check({ pegs }: Pegs) {
+    for (let x of pegs) {
+      // check that x is between 1,...,6
+
+      // naive method:
+      // x.assertGte(Field.one);
+      // x.assertLte(Field(6));
+      // --> bad because `Gte`, `Lte` need boolean unpacking
+      // --> O(255) generic PLONK gates
+      // --> will get more efficient soon-ish, when snarkyjs gets an efficient "range check gate" using plookup
+
+      // less naive: check that (x-1)*...*(x-6) === 0
+      x.sub(1)
+        .mul(x.sub(2))
+        .mul(x.sub(3))
+        .mul(x.sub(4))
+        .mul(x.sub(5))
+        .mul(x.sub(6))
+        .assertEquals(0);
+      // --> ~6-12 generic gates
+      // --> O(n) where n=6
+
+      // remark: optimal method needs only 3 generic gates
+      // --> represent peg as one of w^1, ..., w^6 where w is 6th root of unity
+      // --> check that x^6 === 1
+      // --> x^6 can be computed with 3 multiplications, (x^2 * x)^2
+      // --> O(log(n)) where n=6
+
+      // remark 2: you might not need defensive checks for certain properties
+      // --> think carefully about what you want to prove, in what method
+    }
+  }
+
   toString() {
     return JSON.stringify(this.pegs.map(String));
   }
@@ -45,9 +81,10 @@ class Mastermind extends SmartContract {
   @state(Field) solutionCommitment = State<Field>();
   @state(Field) blackPegs = State<Field>(); // number of black pegs in last hint, 0,...,4; game is won if == 4
   @state(Field) whitePegs = State<Field>(); // number of white pegs in last hint, 0,...,4
-  @state(Field) lastGuess = State<Field>(); // uses base6 encoding, or -1 if there was no guess yet
-  @state(UInt32) numberOfMoves = State<UInt32>();
+  @state(Pegs) lastGuess = State<Pegs>();
+  @state(UInt32) turnNumber = State<UInt32>();
   // do we also want @state player: PublicKey (to be able to demonstrate that *you* won), and/or @state isWon: Bool?
+  // in that case, need base6 encoding for the lastGuess, or -1 if there was no guess yet
 
   @method init(solution: Pegs, zkappKey: PrivateKey, zkappSecret: Field) {
     // only the zkapp owner can call this
@@ -67,8 +104,8 @@ class Mastermind extends SmartContract {
     // initializing other state. technically, you don't have to do the zero ones
     this.blackPegs.set(Field.zero);
     this.whitePegs.set(Field.zero);
-    this.lastGuess.set(Field.minusOne);
-    this.numberOfMoves.set(UInt32.zero);
+    this.lastGuess.set(Pegs.from([0, 0, 0, 0]));
+    this.turnNumber.set(UInt32.zero);
   }
 
   @method makeGuess() {
@@ -106,14 +143,6 @@ class Mastermind extends SmartContract {
 
     let blackPegs = Field.zero;
     let whitePegs = Field.zero;
-
-    // Assert that all values are between 1 and 6 (for the 6 different colored pegs)
-    for (let i = 0; i < 4; i++) {
-      guess[i].assertGte(Field.one);
-      guess[i].assertLte(new Field(6));
-      solution[i].assertGte(Field.one);
-      solution[i].assertLte(new Field(6));
-    }
 
     // Count black pegs
     for (let i = 0; i < 4; i++) {
