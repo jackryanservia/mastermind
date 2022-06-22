@@ -35,6 +35,10 @@ class Pegs extends CircuitValue {
     let [v0, v1, v2, v3] = pegs;
     return new Pegs([Field(v0), Field(v1), Field(v2), Field(v3)]);
   }
+
+  toString() {
+    return JSON.stringify(this.pegs.map(String));
+  }
 }
 
 class Mastermind extends SmartContract {
@@ -45,18 +49,13 @@ class Mastermind extends SmartContract {
   @state(UInt32) numberOfMoves = State<UInt32>();
   // do we also want @state player: PublicKey (to be able to demonstrate that *you* won), and/or @state isWon: Bool?
 
-  @method init(solution: Pegs, zkappKey: PrivateKey) {
+  @method init(solution: Pegs, zkappKey: PrivateKey, zkappSecret: Field) {
     // only the zkapp owner can call this
     this.self.publicKey.assertEquals(zkappKey.toPublicKey());
     // assert that there is no solution commitment yet, so this can only be called once
     this.solutionCommitment.assertEquals(Field.zero);
 
     // create a hiding commitment to the solution
-    // trick: convert the PrivateKey to a Field, without adding O(255) constraints
-    let zkappSecret = Circuit.witness(Field, () => {
-      let scalarBits = zkappKey.s.toFields();
-      return Field.ofBits(scalarBits.map(Bool.Unsafe.ofField));
-    });
     let commitment = Poseidon.hash([...solution.pegs, zkappSecret]);
     this.solutionCommitment.set(commitment);
     // comments:
@@ -131,7 +130,7 @@ class Mastermind extends SmartContract {
     for (let i = 0; i < 4; i++) {
       for (let j = 0; j < 4; j++) {
         let isCorrectColor = guess[i].equals(solution[j]);
-        let isNotBlackPeg = guess[i].gt(Field.zero); // This works, right? Any value is greater than zero? It's impossible to overflow?
+        let isNotBlackPeg = guess[i].equals(Field.zero).not(); // This works, right? Any value is greater than zero? It's impossible to overflow?
         let isWhitePeg = isCorrectColor.and(isNotBlackPeg);
         whitePegs = Circuit.if(isWhitePeg, whitePegs.add(Field.one), whitePegs);
         guess[i] = Circuit.if(isWhitePeg, Field.zero, guess[i]);
@@ -147,40 +146,63 @@ class Mastermind extends SmartContract {
 
 // Run
 
+let withProofs = true; // TODO: make this a config option of LocalBlockchain
+
 let zkAppPrivateKey = PrivateKey.random();
 let zkAppAddress = zkAppPrivateKey.toPublicKey();
 let zkapp = new Mastermind(zkAppAddress);
-
-// console.log('compiling...');
-// await Mastermind.compile(zkAppAddress);
 
 let Local = Mina.LocalBlockchain();
 Mina.setActiveInstance(Local);
 const publisherAccount = Local.testAccounts[0].privateKey;
 console.log('Local Blockchain Online!');
 
+if (withProofs) {
+  console.log('compiling...');
+  await Mastermind.compile(zkAppAddress);
+}
+
 let solution = Pegs.from([1, 2, 3, 6]);
 let tx = await Mina.transaction(publisherAccount, () => {
   Party.fundNewAccount(publisherAccount);
   zkapp.deploy({ zkappKey: zkAppPrivateKey });
-  zkapp.setPermissions({
-    ...Permissions.default(),
-    editState: Permissions.proofOrSignature(),
-  });
-  // TODO create proof
-  zkapp.init(solution, zkAppPrivateKey);
+  if (!withProofs) {
+    zkapp.setPermissions({
+      ...Permissions.default(),
+      editState: Permissions.proofOrSignature(),
+    });
+  }
 });
 tx.send().wait();
 console.log('Contract Deployed!');
+
+// trick: convert zkapp PrivateKey to a Field, to get a secret that can be hashed without adding O(255) constraints
+let scalarBits = zkAppPrivateKey.s.toFields();
+let zkappSecret = Field.ofBits(scalarBits.map(Bool.Unsafe.ofField));
+// TODO: investigate why this didn't work in a Circuit.witness block inside the method
+
+tx = await Mina.transaction(publisherAccount, () => {
+  zkapp.init(solution, zkAppPrivateKey, zkappSecret);
+  if (!withProofs) zkapp.sign(zkAppPrivateKey);
+});
+if (withProofs) {
+  console.log('proving...');
+  await tx.prove();
+}
+tx.send().wait();
 
 let guess = Pegs.from([6, 3, 2, 1]);
 let blackPegs = Field.zero;
 let whitePegs = new Field(4);
 tx = await Mina.transaction(publisherAccount, () => {
-  let zkApp = new Mastermind(zkAppAddress);
-  zkApp.validateHint(guess, solution, blackPegs, whitePegs);
-  zkApp.sign(zkAppPrivateKey);
+  let zkapp = new Mastermind(zkAppAddress);
+  zkapp.validateHint(guess, solution, blackPegs, whitePegs);
+  if (!withProofs) zkapp.sign(zkAppPrivateKey);
 });
+if (withProofs) {
+  console.log('proving...');
+  await tx.prove();
+}
 tx.send().wait();
 
 console.log('Guess Valid!');
