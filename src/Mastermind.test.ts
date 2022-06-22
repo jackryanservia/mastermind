@@ -1,4 +1,4 @@
-import {Mastermind} from './Mastermind';
+// import Mastermind from './Mastermind';
 
 describe('Mastermind.js', () => {
   describe('Mastermind()', () => {
