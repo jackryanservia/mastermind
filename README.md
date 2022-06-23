@@ -1,24 +1,17 @@
 # Mina zkApp: Mastermind
 
-This template uses TypeScript.
-
-## How to build
+How to build:
 
 ```sh
 npm run build
 ```
 
-## How to run tests
+Run the examples:
 
 ```sh
-npm run test
-npm run testw # watch mode
-```
-
-## How to run coverage
-
-```sh
-npm run coverage
+node build/run.js # Mastermind.ts, naive implementation
+node build/run-advanced.js # Mastermind-advanced.ts, non-recursive but more complex version
+node build/run-recursive.js # Mastermind-recursive.ts
 ```
 
 ## License
