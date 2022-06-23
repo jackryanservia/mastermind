@@ -11,5 +11,8 @@ module.exports = {
     ecmaVersion: 'latest',
   },
   plugins: ['@typescript-eslint', 'snarkyjs'],
-  rules: {},
+  rules: {
+    'no-redeclare': 'off',
+    'no-unused-vars': 'warn',
+  },
 };
