@@ -10,7 +10,7 @@ import { Mastermind, Pegs } from './Mastermind.js';
 
 await isReady;
 
-let withProofs = false; // TODO: make this a config option of LocalBlockchain
+let withProofs = true; // TODO: make this a config option of LocalBlockchain
 
 let zkAppPrivateKey = PrivateKey.random();
 let zkAppAddress = zkAppPrivateKey.toPublicKey();
