@@ -158,7 +158,7 @@ class Mastermind extends SmartContract {
         // Check if the pegs are the same color
         let isCorrectColor = guess[i].equals(solution[j]);
         // Check that the peg exists (we might have removed it when calculating // red pegs)
-        let isNotRedPeg = guess[i].equals(Field.zero).not(); // TODO -- use not equals
+        let isNotRedPeg = guess[i].equals(0).not();
         // If the pegs in these locations exist and they are the same color
         // then we should add a white peg
         let isWhitePeg = isCorrectColor.and(isNotRedPeg);
