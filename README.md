@@ -1,5 +1,7 @@
 # Mina zkApp: Mastermind
 
+> ⚠️ This currently depends on a local version of snarkyjs from this branch: https://github.com/o1-labs/snarkyjs/pull/251
+
 How to build:
 
 ```sh
